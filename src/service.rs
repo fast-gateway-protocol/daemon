@@ -59,7 +59,7 @@ use std::collections::HashMap;
 ///     }
 /// }
 /// ```
-pub trait FgpService: Send + Sync {
+pub trait FgpService: Send {
     /// Service name (used in socket path and logging).
     fn name(&self) -> &str;
 
