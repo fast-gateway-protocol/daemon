@@ -61,7 +61,7 @@ pub struct Response {
 /// - `UNAUTHORIZED`: Auth required or failed
 /// - `TIMEOUT`: Operation timed out
 /// - `SERVICE_UNAVAILABLE`: Dependency unavailable
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ErrorInfo {
     /// Error code (UPPER_SNAKE_CASE)
     pub code: String,
