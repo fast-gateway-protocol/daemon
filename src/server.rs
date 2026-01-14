@@ -8,6 +8,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
@@ -37,14 +38,14 @@ use crate::service::{FgpService, MethodInfo};
 /// server.serve()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub struct FgpServer<S: FgpService> {
-    service: S,
+pub struct FgpServer<S: FgpService + 'static> {
+    service: Arc<S>,
     socket_path: PathBuf,
-    started_at: Instant,
+    started_at: Arc<Instant>,
     running: Arc<AtomicBool>,
 }
 
-impl<S: FgpService> FgpServer<S> {
+impl<S: FgpService + 'static> FgpServer<S> {
     /// Create a new FGP server.
     ///
     /// # Arguments
@@ -59,9 +60,9 @@ impl<S: FgpService> FgpServer<S> {
         }
 
         Ok(Self {
-            service,
+            service: Arc::new(service),
             socket_path,
-            started_at: Instant::now(),
+            started_at: Arc::new(Instant::now()),
             running: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -74,6 +75,7 @@ impl<S: FgpService> FgpServer<S> {
     /// Start serving requests (blocking).
     ///
     /// This method blocks until `stop()` is called or the process receives a signal.
+    /// Connections are handled concurrently using threads for parallel request processing.
     pub fn serve(&self) -> Result<()> {
         // Call service on_start hook
         self.service.on_start()?;
@@ -96,10 +98,10 @@ impl<S: FgpService> FgpServer<S> {
             service = self.service.name(),
             version = self.service.version(),
             socket = %self.socket_path.display(),
-            "FGP daemon started"
+            "FGP daemon started (concurrent mode)"
         );
 
-        // Accept connections sequentially (single-threaded)
+        // Accept connections and spawn thread for each (concurrent)
         for stream in listener.incoming() {
             if !self.running.load(Ordering::SeqCst) {
                 break;
@@ -107,9 +109,16 @@ impl<S: FgpService> FgpServer<S> {
 
             match stream {
                 Ok(stream) => {
-                    if let Err(e) = self.handle_connection(stream) {
-                        error!(error = %e, "Connection error");
-                    }
+                    // Clone Arcs for the spawned thread
+                    let service = Arc::clone(&self.service);
+                    let started_at = Arc::clone(&self.started_at);
+                    let running = Arc::clone(&self.running);
+
+                    thread::spawn(move || {
+                        if let Err(e) = Self::handle_connection_static(stream, &service, &started_at, &running) {
+                            error!(error = %e, "Connection error");
+                        }
+                    });
                 }
                 Err(e) => {
                     warn!(error = %e, "Accept error");
@@ -132,8 +141,19 @@ impl<S: FgpService> FgpServer<S> {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    /// Handle a single client connection.
+    /// Handle a single client connection (instance method - calls static version).
+    #[allow(dead_code)]
     fn handle_connection(&self, stream: UnixStream) -> Result<()> {
+        Self::handle_connection_static(stream, &self.service, &self.started_at, &self.running)
+    }
+
+    /// Handle a single client connection (static version for thread spawning).
+    fn handle_connection_static(
+        stream: UnixStream,
+        service: &Arc<S>,
+        started_at: &Arc<Instant>,
+        running: &Arc<AtomicBool>,
+    ) -> Result<()> {
         let writer_stream = stream.try_clone()?;
         let mut reader = BufReader::new(&stream);
         let mut writer = writer_stream;
@@ -165,10 +185,10 @@ impl<S: FgpService> FgpServer<S> {
             }
         };
 
-        // Strip service prefix if present (e.g., "github.repos" -> "repos")
         let method = request.method.as_str();
-        let service_prefix = format!("{}.", self.service.name());
-        let action = if method.starts_with(&service_prefix) {
+        let service_prefix = format!("{}.", service.name());
+        let is_namespaced_for_service = method.starts_with(&service_prefix);
+        let action = if is_namespaced_for_service {
             &method[service_prefix.len()..]
         } else {
             method
@@ -176,36 +196,73 @@ impl<S: FgpService> FgpServer<S> {
 
         debug!(
             method = %request.method,
-            action = %action,
             id = %request.id,
             "Handling request"
         );
 
-        // Dispatch to service or handle built-in methods
+        // Dispatch to service or handle built-in methods. Built-ins may be called as either:
+        // - "health" / "methods" / "stop" (preferred)
+        // - "<service>.health" / "<service>.methods" / "<service>.stop" (accepted for compatibility)
         let response = match action {
-            "health" => self.handle_health(&request.id, start),
-            "stop" => {
-                self.stop();
+            "health" if method == "health" || is_namespaced_for_service => {
+                Self::handle_health_static(&request.id, start, service, started_at)
+            }
+            "stop" if method == "stop" || is_namespaced_for_service => {
+                running.store(false, Ordering::SeqCst);
                 Response::success(
                     &request.id,
                     serde_json::json!({"message": "Shutting down"}),
                     start.elapsed().as_secs_f64() * 1000.0,
                 )
             }
-            "methods" => self.handle_methods(&request.id, start),
-            _ => match self.service.dispatch(action, request.params) {
-                Ok(result) => Response::success(
-                    &request.id,
-                    result,
-                    start.elapsed().as_secs_f64() * 1000.0,
-                ),
-                Err(e) => Response::error(
-                    &request.id,
-                    error_codes::INTERNAL_ERROR,
-                    e.to_string(),
-                    start.elapsed().as_secs_f64() * 1000.0,
-                ),
-            },
+            "methods" if method == "methods" || is_namespaced_for_service => {
+                Self::handle_methods_static(&request.id, start, service)
+            }
+            _ => {
+                if method.contains('.') && !is_namespaced_for_service {
+                    Response::error(
+                        &request.id,
+                        error_codes::INVALID_REQUEST,
+                        format!(
+                            "Method namespace must match service '{}': got '{}'",
+                            service.name(),
+                            method
+                        ),
+                        start.elapsed().as_secs_f64() * 1000.0,
+                    )
+                } else {
+                    // Normalize to fully-qualified method names for the service dispatch.
+                    let dispatch_method = if is_namespaced_for_service {
+                        request.method.clone()
+                    } else if method.contains('.') {
+                        // Already handled mismatch above, so this is unreachable.
+                        request.method.clone()
+                    } else {
+                        format!("{}{}", service_prefix, method)
+                    };
+
+                    debug!(
+                        request_method = %request.method,
+                        dispatch_method = %dispatch_method,
+                        id = %request.id,
+                        "Dispatching request"
+                    );
+
+                    match service.dispatch(&dispatch_method, request.params) {
+                        Ok(result) => Response::success(
+                            &request.id,
+                            result,
+                            start.elapsed().as_secs_f64() * 1000.0,
+                        ),
+                        Err(e) => Response::error(
+                            &request.id,
+                            error_codes::INTERNAL_ERROR,
+                            e.to_string(),
+                            start.elapsed().as_secs_f64() * 1000.0,
+                        ),
+                    }
+                }
+            }
         };
 
         // Send NDJSON response
@@ -223,10 +280,16 @@ impl<S: FgpService> FgpServer<S> {
         Ok(())
     }
 
-    /// Handle the `health` built-in method.
+    /// Handle the `health` built-in method (instance version).
+    #[allow(dead_code)]
     fn handle_health(&self, id: &str, start: Instant) -> Response {
-        let uptime = self.started_at.elapsed().as_secs();
-        let services = self.service.health_check();
+        Self::handle_health_static(id, start, &self.service, &self.started_at)
+    }
+
+    /// Handle the `health` built-in method (static version).
+    fn handle_health_static(id: &str, start: Instant, service: &Arc<S>, started_at: &Arc<Instant>) -> Response {
+        let uptime = started_at.elapsed().as_secs();
+        let services = service.health_check();
 
         // Determine overall status
         let status = if services.values().all(|s| s.ok) {
@@ -245,7 +308,7 @@ impl<S: FgpService> FgpServer<S> {
                 "status": status,
                 "pid": std::process::id(),
                 "started_at": chrono_now_iso(),
-                "version": self.service.version(),
+                "version": service.version(),
                 "uptime_seconds": uptime,
                 "services": services,
             }),
@@ -253,8 +316,14 @@ impl<S: FgpService> FgpServer<S> {
         )
     }
 
-    /// Handle the `methods` built-in method.
+    /// Handle the `methods` built-in method (instance version).
+    #[allow(dead_code)]
     fn handle_methods(&self, id: &str, start: Instant) -> Response {
+        Self::handle_methods_static(id, start, &self.service)
+    }
+
+    /// Handle the `methods` built-in method (static version).
+    fn handle_methods_static(id: &str, start: Instant, service: &Arc<S>) -> Response {
         let mut methods: Vec<MethodInfo> = vec![
             MethodInfo {
                 name: "health".into(),
@@ -273,7 +342,13 @@ impl<S: FgpService> FgpServer<S> {
             },
         ];
 
-        methods.extend(self.service.method_list());
+        let service_prefix = format!("{}.", service.name());
+        for mut method_info in service.method_list() {
+            if !method_info.name.contains('.') {
+                method_info.name = format!("{}{}", service_prefix, method_info.name);
+            }
+            methods.push(method_info);
+        }
 
         Response::success(
             id,

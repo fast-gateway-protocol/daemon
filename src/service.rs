@@ -21,6 +21,7 @@ use std::collections::HashMap;
 ///
 /// ```rust
 /// use fgp_daemon::FgpService;
+/// use fgp_daemon::service::{MethodInfo, ParamInfo};
 /// use std::collections::HashMap;
 /// use serde_json::Value;
 /// use anyhow::Result;
@@ -52,14 +53,19 @@ use std::collections::HashMap;
 ///                 name: "gmail.list".into(),
 ///                 description: "List emails from inbox".into(),
 ///                 params: vec![
-///                     ParamInfo { name: "limit".into(), param_type: "integer".into(), required: false },
+///                     ParamInfo {
+///                         name: "limit".into(),
+///                         param_type: "integer".into(),
+///                         required: false,
+///                         default: None,
+///                     },
 ///                 ],
 ///             },
 ///         ]
 ///     }
 /// }
 /// ```
-pub trait FgpService: Send {
+pub trait FgpService: Send + Sync {
     /// Service name (used in socket path and logging).
     fn name(&self) -> &str;
 
