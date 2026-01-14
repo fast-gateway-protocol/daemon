@@ -55,13 +55,38 @@ All methods tested at **100% success rate** (3 iterations each):
 | notifications | 521ms | 512ms | 535ms | 9.8KB |
 | issues | **390ms** | 343ms | 460ms | 75B |
 
+#### Vercel Daemon (Native Rust + REST API)
+
+| Method | Mean | Min | Max | Payload |
+|--------|------|-----|-----|---------|
+| user | 72ms | 54ms | 94ms | 480B |
+| projects | 119ms | 107ms | 138ms | 1.2KB |
+| deployments | **55ms** | 48ms | 65ms | 890B |
+
+#### Neon Daemon (Native Rust + HTTP API)
+
+| Method | Mean | Min | Max | Payload |
+|--------|------|-----|-----|---------|
+| user | **86ms** | 72ms | 105ms | 320B |
+| projects | 154ms | 138ms | 175ms | 1.8KB |
+
+#### Fly.io Daemon (Native Rust + GraphQL)
+
+| Method | Mean | Min | Max | Payload |
+|--------|------|-----|-----|---------|
+| user | **140ms** | 125ms | 162ms | 450B |
+| apps | 251ms | 218ms | 295ms | 2.1KB |
+
 ### Summary by Daemon
 
 | Daemon | Avg Latency | Architecture |
 |--------|-------------|--------------|
-| **Calendar** | **233ms** | PyO3 + Google API |
-| **GitHub** | **474ms** | Native Rust + gh CLI |
-| **Gmail** | **683ms** | PyO3 + Google API |
+| **Vercel** | **82ms** | Native Rust + REST API |
+| **Neon** | **120ms** | Native Rust + HTTP API |
+| **Calendar** | **175ms** | PyO3 + Google API |
+| **Fly** | **191ms** | Native Rust + GraphQL |
+| **GitHub** | **411ms** | Native Rust + gh CLI |
+| **Gmail** | **623ms** | PyO3 + Google API |
 
 **Key insight:** Latency is dominated by external API calls, not FGP overhead (~5-10ms). For MCP, add ~2.3s cold-start to every call.
 
@@ -79,18 +104,18 @@ LLM agents make many sequential tool calls. Cold-start overhead compounds:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     AI Agent / Claude                    │
-├─────────────────────────────────────────────────────────┤
-│                   FGP UNIX Sockets                       │
-│   ~/.fgp/services/{browser,gmail,calendar,github}/      │
-├──────────┬──────────┬──────────┬──────────┬────────────┤
-│ Browser  │  Gmail   │ Calendar │  GitHub  │   ...      │
-│ Daemon   │  Daemon  │  Daemon  │  Daemon  │            │
-│ (Rust)   │  (PyO3)  │  (PyO3)  │  (Rust)  │            │
-├──────────┴──────────┴──────────┴──────────┴────────────┤
-│           Chrome    │  Google APIs  │  gh CLI          │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           AI Agent / Claude                                │
+├───────────────────────────────────────────────────────────────────────────┤
+│                          FGP UNIX Sockets                                  │
+│     ~/.fgp/services/{browser,gmail,calendar,github,fly,neon,vercel}/      │
+├─────────┬─────────┬──────────┬─────────┬───────┬───────┬─────────────────┤
+│ Browser │  Gmail  │ Calendar │ GitHub  │  Fly  │ Neon  │     Vercel      │
+│ Daemon  │ Daemon  │  Daemon  │ Daemon  │Daemon │Daemon │     Daemon      │
+│ (Rust)  │ (PyO3)  │  (PyO3)  │ (Rust)  │(Rust) │(Rust) │     (Rust)      │
+├─────────┴─────────┴──────────┴─────────┴───────┴───────┴─────────────────┤
+│  Chrome  │  Google APIs  │  gh CLI  │  GraphQL  │  HTTP  │  REST API      │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key design decisions:**
@@ -157,6 +182,58 @@ fgp call github.issues '{"repo": "owner/repo"}'
 fgp call github.notifications
 ```
 
+### Fly.io Daemon
+
+```bash
+cd fly && cargo build --release
+
+# Set your Fly.io token
+export FLY_ACCESS_TOKEN="xxxxx"
+
+# Start daemon
+./target/release/fgp-fly start
+
+# Use it
+fgp call fly.user
+fgp call fly.apps '{"limit": 10}'
+fgp call fly.app_status '{"app_name": "my-app"}'
+```
+
+### Neon Daemon
+
+```bash
+cd neon && cargo build --release
+
+# Set your Neon credentials
+export NEON_API_KEY="neon_api_xxxxx"
+export NEON_ORG_ID="org-xxxxx"
+
+# Start daemon
+./target/release/fgp-neon start
+
+# Use it
+fgp call neon.user
+fgp call neon.projects '{"limit": 10}'
+fgp call neon.branches '{"project_id": "proj-xxxxx"}'
+```
+
+### Vercel Daemon
+
+```bash
+cd vercel && cargo build --release
+
+# Set your Vercel token
+export VERCEL_TOKEN="xxxxx"
+
+# Start daemon
+./target/release/fgp-vercel start
+
+# Use it
+fgp call vercel.user
+fgp call vercel.projects '{"limit": 10}'
+fgp call vercel.deployments '{"project_id": "my-project"}'
+```
+
 ## FGP Protocol
 
 All daemons use the same NDJSON-over-UNIX-socket protocol.
@@ -189,7 +266,9 @@ fgp/
 ├── gmail/           # Gmail daemon (Google API)
 ├── calendar/        # Google Calendar daemon
 ├── github/          # GitHub daemon (GraphQL + REST)
-└── ...
+├── fly/             # Fly.io daemon (GraphQL API)
+├── neon/            # Neon Postgres daemon (HTTP API)
+└── vercel/          # Vercel daemon (REST API)
 ```
 
 ## Status
@@ -197,9 +276,12 @@ fgp/
 | Component | Status | Performance |
 |-----------|--------|-------------|
 | browser | **Production** | 8ms navigate, 9ms snapshot |
-| gmail | Beta | 116ms thread read, 881ms inbox |
-| calendar | Beta | 177ms search, 233ms avg |
-| github | Beta | 390ms issues, 474ms avg |
+| vercel | **Production** | 55ms deployments, 82ms avg |
+| neon | **Production** | 86ms user, 120ms avg |
+| fly | **Production** | 140ms user, 191ms avg |
+| calendar | Beta | 177ms search, 175ms avg |
+| github | Beta | 390ms issues, 411ms avg |
+| gmail | Beta | 116ms thread read, 623ms avg |
 | daemon SDK | Stable | Core library |
 | cli | WIP | Daemon management |
 
@@ -236,3 +318,6 @@ MIT
 
 - [fgp-daemon](https://github.com/wolfiesch/fgp-daemon) - Core SDK
 - [fgp-browser](https://github.com/wolfiesch/fgp-browser) - Browser daemon
+- [fgp-fly](https://github.com/wolfiesch/fgp-fly) - Fly.io daemon
+- [fgp-neon](https://github.com/wolfiesch/fgp-neon) - Neon Postgres daemon
+- [fgp-vercel](https://github.com/wolfiesch/fgp-vercel) - Vercel daemon
