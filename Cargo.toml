@@ -32,13 +32,23 @@ libc = "0.2"
 # UUID for request IDs
 uuid = { version = "1.7", features = ["v4"] }
 
+# Python integration (optional)
+pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
+
 [features]
 default = []
 async-client = ["tokio"]
+python = ["pyo3"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[example]]
 name = "echo_daemon"
 path = "examples/echo_daemon.rs"
+
+[[example]]
+name = "python_daemon"
+path = "examples/python_daemon.rs"
+required-features = ["python"]

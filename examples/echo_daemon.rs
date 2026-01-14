@@ -9,7 +9,7 @@
 //!
 //! # Test with the client
 //! ```bash
-//! echo '{"id":"1","v":1,"method":"echo","params":{"message":"hello"}}' | nc -U ~/.fgp/services/echo/daemon.sock
+//! echo '{"id":"1","v":1,"method":"echo.echo","params":{"message":"hello"}}' | nc -U ~/.fgp/services/echo/daemon.sock
 //! ```
 
 use anyhow::Result;
@@ -32,7 +32,7 @@ impl FgpService for EchoService {
 
     fn dispatch(&self, method: &str, params: HashMap<String, Value>) -> Result<Value> {
         match method {
-            "echo" => {
+            "echo.echo" => {
                 // Echo back the params
                 Ok(serde_json::json!({
                     "echo": params,
@@ -42,10 +42,10 @@ impl FgpService for EchoService {
                         .as_secs()
                 }))
             }
-            "ping" => {
+            "echo.ping" => {
                 Ok(serde_json::json!({"pong": true}))
             }
-            "error" => {
+            "echo.error" => {
                 // Intentionally return an error for testing
                 anyhow::bail!("Intentional error for testing")
             }
@@ -58,7 +58,7 @@ impl FgpService for EchoService {
     fn method_list(&self) -> Vec<MethodInfo> {
         vec![
             MethodInfo {
-                name: "echo".into(),
+                name: "echo.echo".into(),
                 description: "Echo back the provided parameters".into(),
                 params: vec![
                     ParamInfo {
@@ -70,12 +70,12 @@ impl FgpService for EchoService {
                 ],
             },
             MethodInfo {
-                name: "ping".into(),
+                name: "echo.ping".into(),
                 description: "Simple ping/pong health check".into(),
                 params: vec![],
             },
             MethodInfo {
-                name: "error".into(),
+                name: "echo.error".into(),
                 description: "Returns an error (for testing error handling)".into(),
                 params: vec![],
             },

@@ -53,12 +53,18 @@ pub mod service;
 pub mod lifecycle;
 pub mod client;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 // Re-exports for convenience
 pub use protocol::{Request, Response, ErrorInfo, ResponseMeta};
 pub use server::FgpServer;
 pub use service::FgpService;
 pub use client::FgpClient;
 pub use lifecycle::{daemonize, write_pid_file, cleanup_socket};
+
+#[cfg(feature = "python")]
+pub use python::PythonModule;
 
 /// Protocol version constant
 pub const PROTOCOL_VERSION: u8 = 1;
