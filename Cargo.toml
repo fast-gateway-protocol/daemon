@@ -33,7 +33,7 @@ libc = "0.2"
 uuid = { version = "1.7", features = ["v4"] }
 
 # Python integration (optional)
-pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
+pyo3 = { version = "0.24.1", features = ["auto-initialize"], optional = true }
 
 [features]
 default = []
