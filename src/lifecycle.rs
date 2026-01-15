@@ -1,11 +1,14 @@
 //! Daemon lifecycle utilities.
 //!
-//! Helpers for daemonizing processes, managing PID files, and socket cleanup.
+//! Helpers for daemonizing processes, managing PID files, socket cleanup,
+//! and on-demand service starting.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 /// Daemonize the current process.
 ///
@@ -147,6 +150,154 @@ pub fn service_pid_path(service_name: &str) -> PathBuf {
     PathBuf::from(base.as_ref())
         .join(service_name)
         .join("daemon.pid")
+}
+
+/// Get the FGP services base directory.
+pub fn fgp_services_dir() -> PathBuf {
+    let base = shellexpand::tilde("~/.fgp/services");
+    PathBuf::from(base.as_ref())
+}
+
+/// Start a daemon service on-demand.
+///
+/// This function:
+/// 1. Reads the service manifest from `~/.fgp/services/{service}/manifest.json`
+/// 2. Spawns the daemon entrypoint process
+/// 3. Waits for the socket to appear (with timeout)
+///
+/// # Arguments
+/// * `service_name` - Name of the service to start (e.g., "gmail", "browser")
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use fgp_daemon::lifecycle::start_service;
+///
+/// // Start the gmail daemon
+/// start_service("gmail")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn start_service(service_name: &str) -> Result<()> {
+    start_service_with_timeout(service_name, Duration::from_secs(5))
+}
+
+/// Start a daemon service with a custom timeout.
+///
+/// # Arguments
+/// * `service_name` - Name of the service to start
+/// * `timeout` - Maximum time to wait for socket to appear
+pub fn start_service_with_timeout(service_name: &str, timeout: Duration) -> Result<()> {
+    let service_dir = fgp_services_dir().join(service_name);
+
+    // Check if service is installed
+    let manifest_path = service_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        bail!(
+            "Service '{}' is not installed. Run 'fgp install <path>' first.",
+            service_name
+        );
+    }
+
+    // Check if already running
+    let socket_path = service_socket_path(service_name);
+    if socket_path.exists() {
+        // Try to connect to see if it's actually running
+        if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+            tracing::debug!("Service '{}' is already running", service_name);
+            return Ok(());
+        } else {
+            // Stale socket, remove it
+            let _ = fs::remove_file(&socket_path);
+        }
+    }
+
+    // Read manifest to get entrypoint
+    let manifest_content = fs::read_to_string(&manifest_path)
+        .context("Failed to read manifest.json")?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
+        .context("Failed to parse manifest.json")?;
+
+    let entrypoint = manifest["daemon"]["entrypoint"]
+        .as_str()
+        .context("manifest.json missing daemon.entrypoint")?;
+
+    let entrypoint_path = service_dir.join(entrypoint);
+    if !entrypoint_path.exists() {
+        bail!("Daemon entrypoint not found: {}", entrypoint_path.display());
+    }
+
+    tracing::info!("Starting service '{}'...", service_name);
+
+    // Start as background process
+    let _child = Command::new(&entrypoint_path)
+        .current_dir(&service_dir)
+        .spawn()
+        .context("Failed to start daemon")?;
+
+    // Wait for socket to appear with timeout
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if socket_path.exists() {
+            // Verify we can connect
+            if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+                tracing::info!("Service '{}' started successfully", service_name);
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    bail!(
+        "Service '{}' started but socket not ready within {:?}",
+        service_name,
+        timeout
+    )
+}
+
+/// Stop a daemon service.
+///
+/// Sends SIGTERM to the daemon process and cleans up socket/PID files.
+///
+/// # Arguments
+/// * `service_name` - Name of the service to stop
+pub fn stop_service(service_name: &str) -> Result<()> {
+    let socket_path = service_socket_path(service_name);
+    let pid_path = service_pid_path(service_name);
+
+    // Check if PID file exists
+    if let Some(pid) = read_pid_file(&pid_path) {
+        if is_process_running(pid) {
+            tracing::info!("Stopping service '{}' (PID: {})...", service_name, pid);
+
+            // Send SIGTERM
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+
+            // Wait a moment for graceful shutdown
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    // Clean up files
+    let _ = fs::remove_file(&socket_path);
+    let _ = fs::remove_file(&pid_path);
+
+    tracing::info!("Service '{}' stopped", service_name);
+    Ok(())
+}
+
+/// Check if a service is currently running.
+///
+/// # Arguments
+/// * `service_name` - Name of the service to check
+pub fn is_service_running(service_name: &str) -> bool {
+    let socket_path = service_socket_path(service_name);
+    if socket_path.exists() {
+        std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
