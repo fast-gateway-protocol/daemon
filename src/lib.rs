@@ -61,7 +61,11 @@ pub use protocol::{Request, Response, ErrorInfo, ResponseMeta};
 pub use server::FgpServer;
 pub use service::FgpService;
 pub use client::FgpClient;
-pub use lifecycle::{daemonize, write_pid_file, cleanup_socket};
+pub use lifecycle::{
+    daemonize, write_pid_file, cleanup_socket,
+    start_service, start_service_with_timeout, stop_service, is_service_running,
+    fgp_services_dir, service_socket_path, service_pid_path
+};
 
 #[cfg(feature = "python")]
 pub use python::PythonModule;
