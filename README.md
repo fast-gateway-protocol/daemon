@@ -316,8 +316,8 @@ MIT
 
 ## Related
 
-- [fgp-daemon](https://github.com/wolfiesch/fgp-daemon) - Core SDK
-- [fgp-browser](https://github.com/wolfiesch/fgp-browser) - Browser daemon
-- [fgp-fly](https://github.com/wolfiesch/fgp-fly) - Fly.io daemon
-- [fgp-neon](https://github.com/wolfiesch/fgp-neon) - Neon Postgres daemon
-- [fgp-vercel](https://github.com/wolfiesch/fgp-vercel) - Vercel daemon
+- [daemon](https://github.com/fast-gateway-protocol/daemon) - Core SDK
+- [browser](https://github.com/fast-gateway-protocol/browser) - Browser daemon
+- [fly](https://github.com/fast-gateway-protocol/fly) - Fly.io daemon
+- [neon](https://github.com/fast-gateway-protocol/neon) - Neon Postgres daemon
+- [vercel](https://github.com/fast-gateway-protocol/vercel) - Vercel daemon
