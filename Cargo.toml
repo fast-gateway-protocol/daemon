@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Fast Gateway Protocol SDK for building low-latency daemon services"
 license = "MIT"
-repository = "https://github.com/wolfiesch/fgp-daemon"
+repository = "https://github.com/fast-gateway-protocol/daemon"
 keywords = ["daemon", "socket", "ndjson", "ai-agents", "fgp"]
 categories = ["network-programming", "development-tools"]
 authors = ["Wolfgang Schoenberger"]
@@ -43,6 +43,7 @@ python = ["pyo3"]
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
 
 [[example]]
 name = "echo_daemon"
