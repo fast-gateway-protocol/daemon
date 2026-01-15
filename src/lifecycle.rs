@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Daemonize the current process.
@@ -266,9 +266,12 @@ pub fn start_service_with_timeout(service_name: &str, timeout: Duration) -> Resu
 
     tracing::info!("Starting service '{}'...", service_name);
 
-    // Start as background process
+    // Start as background process with stdout/stderr suppressed
+    // to prevent output from corrupting TUI or other callers
     let _child = Command::new(&entrypoint_path)
         .current_dir(&service_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .context("Failed to start daemon")?;
 
